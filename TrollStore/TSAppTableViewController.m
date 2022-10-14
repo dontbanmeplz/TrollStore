@@ -1,5 +1,5 @@
 #import "TSAppTableViewController.h"
-
+#import "TSSceneDelegate.h"
 #import "TSApplicationsManager.h"
 
 #define ICON_FORMAT_IPAD 8
@@ -76,10 +76,171 @@ UIImage* imageWithSize(UIImage* image, CGSize size)
 			object:nil];
 }
 
+- (void)installFromRepo {
+	// check for saved repos
+	NSArray *savedRepos = [[NSUserDefaults standardUserDefaults] objectForKey:@"savedRepos"];
+	if (savedRepos.count == 0) {
+			UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Install from repo" message:@"Enter the repo URL" preferredStyle:UIAlertControllerStyleAlert];
+			[alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+				textField.placeholder = @"Repo URL";
+			}];
+			UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil];
+			UIAlertAction *installAction = [UIAlertAction actionWithTitle:@"Add Repo" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) 
+			{
+				// add repo
+				NSMutableArray *newRepos = [NSMutableArray arrayWithArray:savedRepos];
+				[newRepos addObject:alert.textFields.firstObject.text];
+				[[NSUserDefaults standardUserDefaults] setObject:newRepos forKey:@"savedRepos"];
+				[[NSUserDefaults standardUserDefaults] synchronize];
+				dispatch_async(dispatch_get_main_queue(), ^{
+					[self installFromRepo];
+				});
+			}];
+			[alert addAction:cancelAction];
+			[alert addAction:installAction];
+			[self presentViewController:alert animated:YES completion:nil];
+	} else {
+		UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Install from repo" message:@"Select a repo" preferredStyle:UIAlertControllerStyleAlert];
+		for (NSString *repo in savedRepos) {
+			UIAlertAction *action = [UIAlertAction actionWithTitle:repo style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+				// install
+				NSString *repoURL = repo;
+				// download the repo
+				NSURL *url = [NSURL URLWithString:repoURL];
+				NSURLSessionDataTask *downloadTask = [[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+					if (error) {
+						// error
+						dispatch_async(dispatch_get_main_queue(), ^{
+							UIAlertController *errorAlert = [UIAlertController alertControllerWithTitle:@"Error" message:error.localizedDescription preferredStyle:UIAlertControllerStyleAlert];
+							[errorAlert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+							[self presentViewController:errorAlert animated:YES completion:nil];
+						});
+					} else {
+						// parse the repo ( get all apps and ask the user which one to install )
+						NSError *jsonError;
+						NSDictionary *repo = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingMutableContainers error:&jsonError];
+						if (jsonError) {
+							// error
+							dispatch_async(dispatch_get_main_queue(), ^{
+								UIAlertController *errorAlert = [UIAlertController alertControllerWithTitle:@"Error" message:jsonError.localizedDescription preferredStyle:UIAlertControllerStyleAlert];
+								[errorAlert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+								[self presentViewController:errorAlert animated:YES completion:nil];
+							});
+						} else {
+							// parse the repo
+							NSArray *apps = repo[@"apps"];
+							dispatch_async(dispatch_get_main_queue(), ^{
+								UIAlertController *appAlert = [UIAlertController alertControllerWithTitle:@"Select an app" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+									for (NSDictionary *app in apps) {
+									[appAlert addAction:[UIAlertAction actionWithTitle:app[@"name"] style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+										// download the ipa, then install it
+										NSURL *url = [NSURL URLWithString:app[@"downloadURL"]];
+										UIAlertController *progressAlert = [UIAlertController alertControllerWithTitle:@"Downloading..." message:nil preferredStyle:UIAlertControllerStyleAlert];
+										[progressAlert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+										[self presentViewController:progressAlert animated:YES completion:nil];
+										NSURLSessionDataTask *downloadTask = [[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+											if (error) {
+												// error
+												UIAlertController *errorAlert = [UIAlertController alertControllerWithTitle:@"Error" message:error.localizedDescription preferredStyle:UIAlertControllerStyleAlert];
+												[errorAlert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+												[self presentViewController:errorAlert animated:YES completion:nil];
+											} else {
+												// download the ipa
+												// save the ipa to the documents directory
+												NSString *documentsDirectory = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+												NSString *filePath = [documentsDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.ipa", app[@"bundleIdentifier"]]];
+												[data writeToFile:filePath atomically:YES];
+												// install ipa ON THE MAIN THREAD
+												dispatch_async(dispatch_get_main_queue(), ^{
+													// first dismiss the progress alert controller
+													[self dismissViewControllerAnimated:YES completion:nil];
+													// get the scene delegate and call the install method
+												    TSSceneDelegate *sceneDelegate = (TSSceneDelegate *)self.view.window.windowScene.delegate;
+													[sceneDelegate doIPAInstall:filePath scene:(UIWindowScene *)self.view.window.windowScene force:NO completion:^{
+														// done
+														UIAlertController *doneAlert = [UIAlertController alertControllerWithTitle:@"Done" message:@"The app has been installed" preferredStyle:UIAlertControllerStyleAlert];
+														[doneAlert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+														[self presentViewController:doneAlert animated:YES completion:nil];
+														// remove the ipa
+														[[NSFileManager defaultManager] removeItemAtPath:filePath error:nil];
+													}];
+												});
+												
+											}
+										}];
+										[downloadTask resume];
+									}]];
+								}
+								[appAlert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+								[self presentViewController:appAlert animated:YES completion:nil];
+							});
+						}
+					}
+				}];
+				[downloadTask resume];
+			}];
+			[alert addAction:action];
+		}
+		[alert addAction:[UIAlertAction actionWithTitle:@"Add repo" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+			// add repo
+			UIAlertController *addRepoAlert = [UIAlertController alertControllerWithTitle:@"Add repo" message:nil preferredStyle:UIAlertControllerStyleAlert];
+			[addRepoAlert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+				textField.placeholder = @"Repo URL";
+			}];
+			[addRepoAlert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+			[addRepoAlert addAction:[UIAlertAction actionWithTitle:@"Add" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+				// add the repo to saved repos
+				// but first check for duplicates
+				NSArray *savedRepos = [[NSUserDefaults standardUserDefaults] objectForKey:@"savedRepos"];
+				for (NSString *savedRepo in savedRepos) {
+					if ([savedRepo isEqualToString:addRepoAlert.textFields.firstObject.text]) {
+						// duplicate
+						UIAlertController *duplicateAlert = [UIAlertController alertControllerWithTitle:@"Error" message:@"This repo is already saved" preferredStyle:UIAlertControllerStyleAlert];
+						[duplicateAlert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+						[self presentViewController:duplicateAlert animated:YES completion:nil];
+						return;
+					}
+				}
+				NSMutableArray *newRepos = [NSMutableArray arrayWithArray:savedRepos];
+				[newRepos addObject:addRepoAlert.textFields.firstObject.text];
+				[[NSUserDefaults standardUserDefaults] setObject:newRepos forKey:@"savedRepos"];
+				[[NSUserDefaults standardUserDefaults] synchronize];
+				dispatch_async(dispatch_get_main_queue(), ^{
+					[self installFromRepo];
+				});
+			}]];
+			[self presentViewController:addRepoAlert animated:YES completion:nil];
+		}]];
+		// remove repo
+		[alert addAction:[UIAlertAction actionWithTitle:@"Remove repo" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+			// let user select a repo to remove
+			UIAlertController *removeRepoAlert = [UIAlertController alertControllerWithTitle:@"Remove repo" message:nil preferredStyle:UIAlertControllerStyleAlert];
+			for (NSString *repo in savedRepos) {
+				[removeRepoAlert addAction:[UIAlertAction actionWithTitle:repo style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+					// remove the repo from saved repos
+					NSMutableArray *newRepos = [NSMutableArray arrayWithArray:savedRepos];
+					[newRepos removeObject:repo];
+					[[NSUserDefaults standardUserDefaults] setObject:newRepos forKey:@"savedRepos"];
+					[[NSUserDefaults standardUserDefaults] synchronize];
+					dispatch_async(dispatch_get_main_queue(), ^{
+						[self installFromRepo];
+					});
+				}]];
+			}
+			[removeRepoAlert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+			[self presentViewController:removeRepoAlert animated:YES completion:nil];
+		}]];
+		[alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+		[self presentViewController:alert animated:YES completion:nil];
+	}
+}
+
 - (void)viewDidLoad {
 	[super viewDidLoad];
 	
 	self.tableView.allowsMultipleSelectionDuringEditing = NO;
+	// add a option to install from repo
+	self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd target:self action:@selector(installFromRepo)];
 }
 
 - (void)showError:(NSError*)error
