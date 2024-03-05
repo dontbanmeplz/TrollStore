@@ -89,6 +89,20 @@
 						});
 					}
 				}
+    				else if([components.host isEqualToString:@"uninstall"])
+				{
+					NSString* BundleIDToUninstall;
+					TSApplicationsManager* appsManager = [TSApplicationsManager sharedInstance];
+					for(NSURLQueryItem* queryItem in components.queryItems)
+					{
+						if([queryItem.name isEqualToString:@"bundle-id"])
+						{
+							BundleIDToUninstall = queryItem.value;
+							break;
+						}
+					}
+					[appsManager uninstallApp:BundleIDToUninstall];
+				}
 			}
 		}
 	}
